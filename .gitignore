@@ -1,0 +1,36 @@
+# Rust
+/target
+**/*.rs.bk
+
+# Binaries
+*.exe
+*.dll
+*.so
+*.dylib
+
+# MacOS
+.DS_Store
+
+# Logs
+*.log
+
+# Node modules (if frontend exists in monorepo)
+node_modules/
+
+# Environment variables
+.env
+
+# SQLx offline mode artifacts
+sqlx-data.json
+
+# Cargo build artifacts
+Cargo.lock # (optional - include if library crate)
+/.cargo/config.toml
+
+# IDE & Editor
+.idea/
+.vscode/
+*.swp
+
+# Docker
+docker-compose.override.yml
