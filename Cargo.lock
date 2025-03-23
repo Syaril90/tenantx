@@ -1726,7 +1726,6 @@ dependencies = [
  "tracing-subscriber",
  "uuid",
  "validator",
- "validator_derive",
 ]
 
 [[package]]
