@@ -1,10 +1,12 @@
 mod assets;
+mod shared;
 
 use axum::{Router, serve};
 use dotenv::dotenv;
 use sqlx::postgres::PgPoolOptions;
 use std::env;
 use tokio::net::TcpListener;
+use tracing_subscriber::EnvFilter;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -14,6 +16,11 @@ pub struct AppState {
 #[tokio::main]
 async fn main() {
     dotenv().ok();
+
+    tracing_subscriber::fmt()
+        .with_env_filter(EnvFilter::from_default_env())
+        .init();
+
     let db_url = env::var("DATABASE_URL").expect("DATABASE_URL must be set");
 
     let pool = PgPoolOptions::new()

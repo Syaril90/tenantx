@@ -1,93 +1,57 @@
-use super::model::{Address, Asset, AssetInput};
+use super::model::{Asset, AssetRequest, AssetUpdateRequest};
 use super::service;
 use crate::AppState;
-use axum::extract::Query;
+use crate::shared::response::ApiResponse;
 use axum::{
     extract::{Json, Path, State},
     http::StatusCode,
     response::IntoResponse,
 };
 use serde_json::json;
-use std::collections::HashMap;
+use tracing::{error, info};
 use uuid::Uuid;
+use validator::{Validate, ValidationErrors};
 
-fn parse_address(value: &serde_json::Value) -> Address {
-    serde_json::from_value(value.clone()).unwrap_or(Address {
-        street: "".into(),
-        city: "".into(),
-        state: "".into(),
-        zip: "".into(),
-    })
+fn format_validation_errors(errors: &ValidationErrors) -> serde_json::Value {
+    json!(errors)
 }
-pub async fn list_assets(
-    State(state): State<AppState>,
-    Query(params): Query<HashMap<String, String>>,
-) -> impl IntoResponse {
-    let page: i64 = params.get("page").and_then(|v| v.parse().ok()).unwrap_or(1);
-    let per_page: i64 = params
-        .get("per_page")
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(10);
-    let offset = (page - 1) * per_page;
 
-    match service::list_assets(&state.db, per_page, offset).await {
-        Ok((assets, total)) => {
-            let total_pages = (total as f64 / per_page as f64).ceil() as i64;
-            let assets: Vec<_> = assets
-                .into_iter()
-                .map(|a| {
-                    let addr = parse_address(&a.address);
-                    json!({
-                        "id": a.id,
-                        "name": a.name,
-                        "description": a.description,
-                        "address": addr
-                    })
-                })
-                .collect();
-
-            Json(json!({
-                "data": assets,
-                "meta": {
-                    "total": total,
-                    "total_pages": total_pages,
-                    "current_page": page,
-                    "per_page": per_page
-                }
-            }))
-            .into_response()
-        }
+pub async fn list_assets(State(state): State<AppState>) -> impl IntoResponse {
+    info!("Handling GET /assets");
+    let result = service::list_assets(&state.db).await;
+    match result {
+        Ok(assets) => ApiResponse::success(assets),
         Err(err) => {
-            eprintln!("Error: {:?}", err);
-            (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response()
+            error!(error = %err, "Failed to list assets");
+            ApiResponse::error_message(StatusCode::INTERNAL_SERVER_ERROR, err.to_string())
         }
     }
 }
 
 pub async fn get_asset(State(state): State<AppState>, Path(id): Path<Uuid>) -> impl IntoResponse {
+    info!(asset_id = %id, "Handling GET /assets/:id");
     match service::get_asset(&state.db, id).await {
-        Ok(Some(asset)) => {
-            let addr = parse_address(&asset.address);
-            Json(json!({
-                "id": asset.id,
-                "name": asset.name,
-                "description": asset.description,
-                "address": addr
-            }))
-            .into_response()
-        }
-        Ok(None) => (StatusCode::NOT_FOUND, "Asset not found".to_string()).into_response(),
+        Ok(Some(asset)) => ApiResponse::success(asset),
+        Ok(None) => ApiResponse::error_message(StatusCode::NOT_FOUND, "Asset not found"),
         Err(err) => {
-            eprintln!("Error: {:?}", err);
-            (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response()
+            error!(error = %err, asset_id = %id, "Failed to get asset");
+            ApiResponse::error_message(StatusCode::INTERNAL_SERVER_ERROR, err.to_string())
         }
     }
 }
 
 pub async fn create_asset(
     State(state): State<AppState>,
-    Json(payload): Json<AssetInput>,
+    Json(payload): Json<AssetRequest>,
 ) -> impl IntoResponse {
+    info!("Handling POST /assets");
+
+    if let Err(validation_errors) = payload.validate() {
+        let formatted_errors = format_validation_errors(&validation_errors);
+        error!(?formatted_errors, "Validation failed for create_asset");
+        return ApiResponse::error_json(StatusCode::BAD_REQUEST, formatted_errors);
+    }
+
     let asset = Asset {
         id: Uuid::new_v4(),
         name: payload.name,
@@ -97,21 +61,12 @@ pub async fn create_asset(
 
     match service::create_asset(&state.db, asset).await {
         Ok(asset) => {
-            let addr = parse_address(&asset.address);
-            (
-                StatusCode::CREATED,
-                Json(json!({
-                    "id": asset.id,
-                    "name": asset.name,
-                    "description": asset.description,
-                    "address": addr
-                })),
-            )
-                .into_response()
+            info!(asset_id = %asset.id, "Asset created");
+            ApiResponse::created(asset)
         }
         Err(err) => {
-            eprintln!("Error: {:?}", err);
-            (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response()
+            error!(error = %err, "Failed to create asset");
+            ApiResponse::error_message(StatusCode::INTERNAL_SERVER_ERROR, err.to_string())
         }
     }
 }
@@ -119,30 +74,32 @@ pub async fn create_asset(
 pub async fn update_asset(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
-    Json(payload): Json<AssetInput>,
+    Json(payload): Json<AssetUpdateRequest>,
 ) -> impl IntoResponse {
-    let updated_asset = Asset {
-        id,
+    info!(asset_id = %id, "Handling PUT /assets/:id");
+
+    if let Err(validation_errors) = payload.validate() {
+        let formatted_errors = format_validation_errors(&validation_errors);
+        error!(?formatted_errors, "Validation failed for update_asset");
+        return ApiResponse::error_json(StatusCode::BAD_REQUEST, formatted_errors);
+    }
+
+    let asset = Asset {
+        id, // ID is only taken from the path param
         name: payload.name,
         description: payload.description,
         address: serde_json::to_value(payload.address).unwrap(),
     };
 
-    match service::update_asset(&state.db, id, updated_asset).await {
+    match service::update_asset(&state.db, id, asset).await {
         Ok(Some(asset)) => {
-            let addr = parse_address(&asset.address);
-            Json(json!({
-                "id": asset.id,
-                "name": asset.name,
-                "description": asset.description,
-                "address": addr
-            }))
-            .into_response()
+            info!(asset_id = %id, "Asset updated");
+            ApiResponse::success(asset)
         }
-        Ok(None) => (StatusCode::NOT_FOUND, "Asset not found".to_string()).into_response(),
+        Ok(None) => ApiResponse::error_message(StatusCode::NOT_FOUND, "Asset not found"),
         Err(err) => {
-            eprintln!("Error: {:?}", err);
-            (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response()
+            error!(error = %err, asset_id = %id, "Failed to update asset");
+            ApiResponse::error_message(StatusCode::INTERNAL_SERVER_ERROR, err.to_string())
         }
     }
 }
@@ -151,12 +108,17 @@ pub async fn delete_asset(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
 ) -> impl IntoResponse {
+    info!(asset_id = %id, "Handling DELETE /assets/:id");
+
     match service::delete_asset(&state.db, id).await {
-        Ok(true) => (StatusCode::NO_CONTENT, "").into_response(),
-        Ok(false) => (StatusCode::NOT_FOUND, "Asset not found".to_string()).into_response(),
+        Ok(true) => {
+            info!(asset_id = %id, "Asset deleted");
+            ApiResponse::success(json!({"message": "Asset deleted successfully"}))
+        }
+        Ok(false) => ApiResponse::error_message(StatusCode::NOT_FOUND, "Asset not found"),
         Err(err) => {
-            eprintln!("Error: {:?}", err);
-            (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response()
+            error!(error = %err, asset_id = %id, "Failed to delete asset");
+            ApiResponse::error_message(StatusCode::INTERNAL_SERVER_ERROR, err.to_string())
         }
     }
 }
